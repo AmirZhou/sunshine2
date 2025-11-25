@@ -5,121 +5,301 @@
  * Date: 2025-10-07
  */
 
-'use client';
+"use client";
 
-import * as Types from '../../../shared/types/type';
-import type { NewParentInput } from '@/types/forms';
-import { useState } from 'react';
+import * as Types from "../../../shared/types/type";
+import type { NewParentInput } from "@/types/forms";
+import { useState, useEffect, useCallback, useRef, ChangeEvent, useMemo, Children } from "react";
+import AutoCompleteAddress, { Address } from "../AutoCompleteAddress";
+import api from "@/api/client";
+import { ENDPOINTS } from "@/api/endpoint";
+import { LocationLite } from "@/services/useLocationsAPI";
 
 export default function ParentsTab({
   parents,
-  newParent,
-  setNewParent,
-  onAdd,
+  setParents,
+  children,
+  locations,
 }: {
   parents: Types.Parent[];
-  newParent: NewParentInput;
-  setNewParent: React.Dispatch<React.SetStateAction<NewParentInput>>;
-  onAdd: () => void;
+  setParents: React.Dispatch<React.SetStateAction<Types.Parent[]>>;
+  // newParent: NewParentInput;
+  // setNewParent: React.Dispatch<React.SetStateAction<NewParentInput>>;
+  // onAdd: () => void;
+  children: Types.Child[],
+  locations: LocationLite[]
 }) {
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const defaultLocationView: string = "all";
+  const [locationView, setLocationView] = useState<string>(defaultLocationView); // default is viewing all locations
+  const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const [editingParent, setEditingParent] = useState<Types.Parent | null>(null);
+  const initalEditingParent: Types.Parent = {
+    id: "",
+    docId: '',
+    firstName: '',
+    lastName: '',
+    email: '',
+    phone: '',
+    address1: '',
+    address2: "",
+    city: '',
+    province: '',
+    country: '',
+    postalcode: "",
+    maritalStatus: "",
+    childRelationships: [],
+  }
+  const [editingParent, setEditingParent] = useState<Types.Parent>(initalEditingParent);
+  const [isDraftRestored, setIsDraftRestored] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [phoneError, setPhoneError] = useState<String>("");
 
-  // Filter parents based on search
-  const filteredParents = parents.filter(parent =>
-    parent.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    parent.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    parent.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    parent.phone.toLowerCase().includes(searchTerm.toLowerCase())
+  // Debounced save cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
+
+  // Restore draft when form opens (add mode only)
+  useEffect(() => {
+    if (isFormOpen && !editingParent) {
+      const draft = sessionStorage.getItem("parent-form-draft");
+      if (draft) {
+        try {
+          const parsed = JSON.parse(draft);
+          // setNewParent(parsed);
+          setIsDraftRestored(true);
+        } catch (e) {
+          console.error("Failed to restore draft:", e);
+        }
+      }
+    }
+  }, [isFormOpen, editingParent]);
+
+  //Update form and persist a draft (debounced)
+  const updateParent = useCallback(
+    (updates: Partial<NewParentInput>) => {
+      setEditingParent(prev => {
+        const updated = { ...prev, ...updates };
+
+        // Only save draft in add mode
+        if (!editingParent) {
+          if (saveTimeoutRef.current) {
+            clearTimeout(saveTimeoutRef.current);
+          }
+          saveTimeoutRef.current = setTimeout(() => {
+            sessionStorage.setItem('parent-form-draft', JSON.stringify(updated));
+          }, 500);
+        }
+
+        return updated;
+      });
+    },
+    [editingParent, setEditingParent]
   );
 
-  // Pagination logic
-  const parentsPerPage = 6;
-  const totalPages = Math.ceil(filteredParents.length / parentsPerPage);
-  const startIndex = (currentPage - 1) * parentsPerPage;
-  const paginatedParents = filteredParents.slice(startIndex, startIndex + parentsPerPage);
-
-  const handleFormSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (editingParent) {
-      console.log('Update parent:', { ...editingParent, ...newParent });
-      setEditingParent(null);
-      resetForm();
-    } else {
-      onAdd();
-    }
-    setIsFormOpen(false);
-  };
-
-  const resetForm = () => {
+  // Reset form fields to initial values
+  const resetForm = useCallback(() => {
     setNewParent({
       firstName: '',
       lastName: '',
       email: '',
       phone: '',
-      passwordHash: '',
       childIds: [],
       street: '',
       city: '',
       province: '',
       country: '',
-      emergencyContact: undefined,
-      updatedAt: undefined,
-      preferredLanguage: undefined,
+      // If your NewParentInput uses required strings, keep empty string.
+      // If optional, empty string is still safe for UI.
+      emergencyContact: '',
+      updatedAt: '',
+      preferredLanguage: '',
     });
+  }, [setNewParent]);
+
+  // Clear draft (and optionally reset form fields)
+  const clearDraft = useCallback(
+    (resetFields = false) => {
+      sessionStorage.removeItem('parent-form-draft');
+      setIsDraftRestored(false);
+      if (resetFields) {
+        resetForm();
+      }
+    },
+    [resetForm]
+  );
+
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (editingParent) {
+      const id = editingParent.id;
+      const updated = await api.put<Types.Parent>(`${ENDPOINTS.parents}/${id}`, { ...editingParent });
+      setParents(prev => prev.map(p => p.id === id ? updated : p)); // Updating parents 
+      setEditingParent(initalEditingParent);
+      resetForm();
+      setIsFormOpen(false);
+      return;
+    } else {
+      // onAdd();
+    }
+    clearDraft(); // remove stored draft after submit
+    setIsFormOpen(false);
   };
 
-  const handleAddClick = () => {
-    setEditingParent(null);
-    resetForm();
-    setIsFormOpen(true);
+  // Handle load address to form when editing: setNewTeacher with value of current Address
+  //  Passing Current address value back to input value
+  const newParentAddressValues: Address = {
+    address1: editingParent.address1,
+    address2: editingParent?.address2 || "",
+    city: editingParent.city,
+    province: editingParent.province,
+    country: editingParent.country,
+    postalcode: editingParent.postalcode
   };
+
+  const handleAddressChange = useCallback((a: Address) => {
+    updateParent({
+      address1: a.address1,
+      address2: a.address2,
+      city: a.city,
+      province: a.province,
+      country: a.country,
+      postalcode: a.postalcode
+    });
+  }, [updateParent]);
+
+  const resetForm = () => {
+    setEditingParent(initalEditingParent);
+  };
+
+  // const handleAddClick = () => {
+  //   setEditingParent(null);
+  //   resetForm();
+  //   setIsFormOpen(true);
+  // };
 
   const handleEditClick = (parent: Types.Parent) => {
     setEditingParent(parent);
-    setNewParent({
-      firstName: parent.firstName,
-      lastName: parent.lastName,
-      email: parent.email,
-      phone: parent.phone,
-      passwordHash: '',
-      childIds: parent.childIds,
-      street: parent.street,
-      city: parent.city,
-      province: parent.province,
-      country: parent.country,
-      emergencyContact: parent.emergencyContact,
-      updatedAt: parent.updatedAt,
-      preferredLanguage: parent.preferredLanguage,
-    });
     setIsFormOpen(true);
   };
 
-  const handleDeleteClick = (parent: Types.Parent) => {
-    if (window.confirm(`Are you sure you want to delete ${parent.firstName} ${parent.lastName}?`)) {
-      console.log('Delete parent:', parent.id);
-    }
+  const handleDeleteClick = async (parent: Types.Parent) => {
+    const ok = window.confirm(`Are you sure you want to delete ${parent.firstName} ${parent.lastName}?`);
+    if (!ok) return;
+    await api.delete<{ ok: boolean; uid: string }>(`${ENDPOINTS.parents}/${parent.id}`);
+
+    // Need update UI
+    setParents(prev => prev.filter(p => p.id !== parent.id))
   };
 
   const formatAddress = (parent: Types.Parent) => {
-    return `${parent.street}, ${parent.city}, ${parent.province}, ${parent.country}`;
+    const parts = [
+      parent.address2,
+      parent.address1,
+      parent.city,
+      parent.province,
+      parent.country,
+      parent.postalcode,
+    ].filter(Boolean) as string[];
+    return parts.join(", ");
   };
+
+  // Handle Phone Number
+  const handlePhoneChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    // Update value
+    updateParent({ phone: value });
+
+    // Check value
+    const phoneRegex = /^\d{10}$/; // 10 digits
+    if (!phoneRegex.test(value)) {
+      setPhoneError("Phone number must be 10 digits");
+    } else {
+      setPhoneError("");
+    }
+  }
+
+  const lookUpChild = useMemo(() =>
+    children.reduce((acc, child) => {
+      acc[child.id] = child;
+      return acc;
+    }, {} as Record<string, Types.Child>),
+    [children]
+  );
+
+  const parentWithChildren = useMemo(() =>
+    parents.map((parent) => ({
+      ...parent,
+      children: parent.childRelationships.map(childRelation => lookUpChild[childRelation.childId])
+        .filter(Boolean), // Remove undefined values
+    })),
+    [parents, lookUpChild]
+  );
+
+  // Filter parents based on search
+  const filteredParents = parentWithChildren.filter(
+    (parent) => {
+      const matched = parent.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        parent.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        parent.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        parent.phone.toLowerCase().includes(searchTerm.toLowerCase());
+
+      if (!matched) return false;
+      if (locationView !== defaultLocationView) {
+        if (parent.locationId !== locationView) return false;
+      }
+      return true;
+    }
+  );
+
+  // Pagination logic
+  const parentsPerPage = 6;
+  const totalPages = Math.max(1, Math.ceil(filteredParents.length / parentsPerPage));
+  const startIndex = (currentPage - 1) * parentsPerPage;
+  const paginatedParents = filteredParents.slice(
+    startIndex,
+    startIndex + parentsPerPage
+  );
+
 
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
       {/* Header */}
       <div className="mb-6">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-3xl font-bold text-gray-800">Parents</h2>
-          <button
+          <div className="flex gap-4">
+            <h2 className="text-3xl font-bold text-gray-800">Parents</h2>
+            {/* Location scope */}
+            <select
+              className="appearance-none px-4 py-2 border border-neutral-600 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+              value={locationView}
+              onChange={(e) => setLocationView(e.target.value)}
+              required
+            >
+              <option value="" disabled>
+                Select a view location
+              </option>
+              {(locations ?? []).map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                </option>
+              ))}
+              {/* Default all locations: all ids */}
+              <option value={defaultLocationView}>All locations</option>
+            </select>
+          </div>
+
+          {/* <button
             onClick={handleAddClick}
             className="bg-gray-700 hover:bg-gray-800 text-white font-medium px-4 py-2 rounded-lg transition duration-200 flex items-center gap-2 text-sm shadow-sm"
           >
             <span className="text-lg">+</span>
             Add Parent
-          </button>
+          </button> */}
         </div>
 
         {/* Search Bar */}
@@ -133,12 +313,12 @@ export default function ParentsTab({
                 setSearchTerm(e.target.value);
                 setCurrentPage(1);
               }}
-              className="w-full px-4 py-2 bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-gray-300 focus:border-gray-400"
+              className="w-full px-4 py-2 bg-white border border-neutral-200 focus:outline-none focus:ring-1 focus:ring-neutral-300 focus:border-neutral-400"
             />
             {searchTerm && (
               <button
                 onClick={() => {
-                  setSearchTerm('');
+                  setSearchTerm("");
                   setCurrentPage(1);
                 }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
@@ -155,67 +335,61 @@ export default function ParentsTab({
 
       {/* Parents Grid */}
       {paginatedParents.length > 0 ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           {paginatedParents.map((parent) => (
             <div
               key={parent.id}
-              className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200 p-5"
+              className="group bg-white border border-neutral-200 hover:border-neutral-400 transition-all duration-200 p-6"
             >
               {/* Primary Info */}
-              <div className="mb-4">
-                <h3 className="text-lg font-semibold text-gray-900 mb-1">
+              <div className="mb-5">
+                <h3 className="text-lg font-semibold text-slate-800 mb-1 group-hover:text-neutral-600 transition-colors">
                   {parent.firstName} {parent.lastName}
                 </h3>
-                <div className="text-sm text-gray-500">
-                  {parent.email}
-                </div>
+                <div className="text-sm text-slate-500 font-medium">{parent.email}</div>
               </div>
 
               {/* Secondary Details */}
-              <div className="space-y-2 mb-4 pb-4 border-b border-gray-100">
-                <div className="flex items-start gap-2">
-                  <span className="text-xs text-gray-500">Phone:</span>
-                  <span className="text-xs text-gray-700 font-medium">{parent.phone}</span>
-                </div>
-
-                <div className="flex items-start gap-2">
-                  <span className="text-xs text-gray-500">Address:</span>
-                  <span className="text-xs text-gray-700">{formatAddress(parent)}</span>
-                </div>
-
-                <div className="flex items-start gap-2">
-                  <span className="text-xs text-gray-500">Children:</span>
-                  <span className="text-xs text-gray-700">
-                    {parent.childIds.length > 0 ? `${parent.childIds.length} child(ren)` : 'None'}
+              <div className="space-y-3 mb-5 pb-5 border-b border-slate-100">
+                <div className="flex items-start gap-3">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide min-w-[60px]">Phone</span>
+                  <span className="text-sm text-slate-700 font-medium">
+                    {parent.phone}
                   </span>
                 </div>
 
-                {parent.emergencyContact && (
-                  <div className="flex items-start gap-2">
-                    <span className="text-xs text-gray-500">Emergency:</span>
-                    <span className="text-xs text-gray-700">{parent.emergencyContact}</span>
+                <div className="flex items-start gap-3">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide min-w-[60px]">Address</span>
+                  <span className="text-sm text-slate-600 leading-relaxed">
+                    {formatAddress(parent)}
+                  </span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide min-w-[60px]">Children</span>
+                  <div className="flex flex-wrap gap-2">
+                    {parent.children.length > 0 ?
+                      parent.children.map((child) => (
+                        <span key={child.id} className="inline-flex items-center px-2.5 py-1 bg-neutral-50 text-neutral-700 text-xs font-medium border border-neutral-200">
+                          {[child.firstName, child.lastName].join(' ')}
+                        </span>
+                      )) : (
+                        <span className="text-sm text-slate-400 italic">No children assigned</span>
+                      )}
                   </div>
-                )}
-
-                {parent.preferredLanguage && (
-                  <div className="flex items-start gap-2">
-                    <span className="text-xs text-gray-500">Language:</span>
-                    <span className="text-xs text-gray-700">{parent.preferredLanguage}</span>
-                  </div>
-                )}
+                </div>
               </div>
 
               {/* Action Buttons */}
-              <div className="flex gap-2">
+              <div className="flex gap-3">
                 <button
                   onClick={() => handleEditClick(parent)}
-                  className="flex-1 bg-white/60 backdrop-blur-sm border border-gray-200 hover:bg-white/80 hover:border-gray-300 text-gray-700 font-medium px-3 py-2 rounded-lg transition-all duration-200 text-xs shadow-sm"
+                  className="flex-1 bg-white border border-neutral-200 hover:bg-neutral-50 hover:border-neutral-300 text-neutral-700 font-medium px-4 py-2.5 transition-all duration-200 text-sm"
                 >
                   Edit
                 </button>
                 <button
                   onClick={() => handleDeleteClick(parent)}
-                  className="flex-1 bg-white/60 backdrop-blur-sm border border-gray-200 hover:bg-white/80 hover:border-red-300 text-gray-700 hover:text-red-600 font-medium px-3 py-2 rounded-lg transition-all duration-200 text-xs shadow-sm"
+                  className="flex-1 bg-white border border-neutral-200 hover:bg-red-50 hover:border-red-300 text-neutral-700 hover:text-red-600 font-medium px-4 py-2.5 transition-all duration-200 text-sm"
                 >
                   Delete
                 </button>
@@ -224,10 +398,14 @@ export default function ParentsTab({
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow-md p-12 text-center">
-          <h3 className="text-xl font-semibold text-gray-600 mb-2">No parents found</h3>
+        <div className="bg-white border border-neutral-200 p-12 text-center">
+          <h3 className="text-xl font-semibold text-gray-600 mb-2">
+            No parents found
+          </h3>
           <p className="text-gray-500">
-            {searchTerm ? 'Try adjusting your search terms' : 'Get started by adding your first parent'}
+            {searchTerm
+              ? "Try adjusting your search terms"
+              : "Get started by adding your first parent"}
           </p>
         </div>
       )}
@@ -236,13 +414,12 @@ export default function ParentsTab({
       {totalPages > 1 && (
         <div className="flex justify-center items-center gap-2">
           <button
-            onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+            onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
             disabled={currentPage === 1}
-            className={`px-4 py-2 rounded-lg font-medium transition duration-200 ${
-              currentPage === 1
-                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                : 'bg-white text-gray-700 hover:bg-gray-100 shadow-sm'
-            }`}
+            className={`px-4 py-2 font-medium transition duration-200 border ${currentPage === 1
+              ? "bg-gray-200 text-gray-400 cursor-not-allowed border-gray-200"
+              : "bg-white text-gray-700 hover:bg-gray-100 border-neutral-200"
+              }`}
           >
             ← Previous
           </button>
@@ -252,11 +429,10 @@ export default function ParentsTab({
               <button
                 key={page}
                 onClick={() => setCurrentPage(page)}
-                className={`w-10 h-10 rounded-lg font-medium transition duration-200 ${
-                  currentPage === page
-                    ? 'bg-gray-800 text-white'
-                    : 'bg-white text-gray-700 hover:bg-gray-100 shadow-sm'
-                }`}
+                className={`w-10 h-10 font-medium transition duration-200 border ${currentPage === page
+                  ? "bg-black text-white border-black"
+                  : "bg-white text-gray-700 hover:bg-gray-100 border-neutral-200"
+                  }`}
               >
                 {page}
               </button>
@@ -264,13 +440,14 @@ export default function ParentsTab({
           </div>
 
           <button
-            onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+            onClick={() =>
+              setCurrentPage((prev) => Math.min(totalPages, prev + 1))
+            }
             disabled={currentPage === totalPages}
-            className={`px-4 py-2 rounded-lg font-medium transition duration-200 ${
-              currentPage === totalPages
-                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                : 'bg-white text-gray-700 hover:bg-gray-100 shadow-sm'
-            }`}
+            className={`px-4 py-2 font-medium transition duration-200 border ${currentPage === totalPages
+              ? "bg-gray-200 text-gray-400 cursor-not-allowed border-gray-200"
+              : "bg-white text-gray-700 hover:bg-gray-100 border-neutral-200"
+              }`}
           >
             Next →
           </button>
@@ -283,21 +460,28 @@ export default function ParentsTab({
           className="fixed inset-0 bg-white/30 backdrop-blur-md flex items-center justify-center p-4 z-50"
           onClick={() => {
             setIsFormOpen(false);
-            setEditingParent(null);
+            setEditingParent(initalEditingParent);
           }}
         >
           <div
-            className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto border border-gray-100"
+            className="bg-white max-w-2xl w-full max-h-[90vh] overflow-y-auto border border-neutral-200"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-              <h3 className="text-2xl font-bold text-gray-800">
-                {editingParent ? 'Edit Parent' : 'Add New Parent'}
-              </h3>
+              <div>
+                <h3 className="text-2xl font-bold text-gray-800">
+                  {editingParent ? "Edit Parent" : "Add New Parent"}
+                </h3>
+                {isDraftRestored && !editingParent && (
+                  <p className="text-xs text-green-600 mt-1">
+                    ✓ Draft restored
+                  </p>
+                )}
+              </div>
               <button
                 onClick={() => {
                   setIsFormOpen(false);
-                  setEditingParent(null);
+                  setEditingParent(initalEditingParent);
                 }}
                 className="text-gray-400 hover:text-gray-600 text-2xl"
               >
@@ -307,147 +491,120 @@ export default function ParentsTab({
 
             <form onSubmit={handleFormSubmit} className="p-6">
               <div className="space-y-4">
+                {/* Firstname - Lastname */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <label className="block">
-                    <span className="text-gray-700 font-medium mb-1 block">First Name *</span>
+                    <span className="text-gray-700 font-medium mb-1 block">
+                      First Name *
+                    </span>
                     <input
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
+                      className="appearance-none w-full px-4 py-2 border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900"
                       placeholder="First Name"
-                      value={newParent.firstName}
-                      onChange={(e) => setNewParent({ ...newParent, firstName: e.target.value })}
+                      value={editingParent.firstName}
+                      onChange={(e) =>
+                        updateParent({ firstName: e.target.value })
+                      }
                       required
                     />
                   </label>
 
                   <label className="block">
-                    <span className="text-gray-700 font-medium mb-1 block">Last Name *</span>
+                    <span className="text-gray-700 font-medium mb-1 block">
+                      Last Name *
+                    </span>
                     <input
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
+                      className="appearance-none w-full px-4 py-2 border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900"
                       placeholder="Last Name"
-                      value={newParent.lastName}
-                      onChange={(e) => setNewParent({ ...newParent, lastName: e.target.value })}
+                      value={editingParent.lastName}
+                      onChange={(e) =>
+                        updateParent({ lastName: e.target.value })
+                      }
                       required
                     />
                   </label>
                 </div>
 
-                <label className="block">
-                  <span className="text-gray-700 font-medium mb-1 block">Email *</span>
-                  <input
-                    type="email"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                    placeholder="Email"
-                    value={newParent.email}
-                    onChange={(e) => setNewParent({ ...newParent, email: e.target.value })}
-                    required
-                  />
-                </label>
+                {/* Email - Phone number */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-                <label className="block">
-                  <span className="text-gray-700 font-medium mb-1 block">Phone *</span>
-                  <input
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                    placeholder="Phone"
-                    value={newParent.phone}
-                    onChange={(e) => setNewParent({ ...newParent, phone: e.target.value })}
-                    required
-                  />
-                </label>
-
-                {!editingParent && (
                   <label className="block">
-                    <span className="text-gray-700 font-medium mb-1 block">Password *</span>
+                    <span className="text-gray-700 font-medium mb-1 block">
+                      Email *
+                    </span>
                     <input
-                      type="password"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                      placeholder="Password"
-                      value={newParent.passwordHash}
-                      onChange={(e) => setNewParent({ ...newParent, passwordHash: e.target.value })}
-                      required={!editingParent}
-                    />
-                  </label>
-                )}
-
-                <label className="block">
-                  <span className="text-gray-700 font-medium mb-1 block">Street *</span>
-                  <input
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                    placeholder="Street Address"
-                    value={newParent.street}
-                    onChange={(e) => setNewParent({ ...newParent, street: e.target.value })}
-                    required
-                  />
-                </label>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <label className="block">
-                    <span className="text-gray-700 font-medium mb-1 block">City *</span>
-                    <input
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                      placeholder="City"
-                      value={newParent.city}
-                      onChange={(e) => setNewParent({ ...newParent, city: e.target.value })}
+                      type="email"
+                      className="appearance-none w-full px-4 py-2 border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                      placeholder="Email"
+                      value={editingParent.email}
+                      onChange={(e) => updateParent({ email: e.target.value })}
                       required
                     />
                   </label>
 
                   <label className="block">
-                    <span className="text-gray-700 font-medium mb-1 block">Province *</span>
+                    <span className="text-gray-700 font-medium mb-1 block">
+                      Phone *  <span className="text-red-500 text-sm">{phoneError}</span>
+                    </span>
                     <input
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                      placeholder="Province"
-                      value={newParent.province}
-                      onChange={(e) => setNewParent({ ...newParent, province: e.target.value })}
-                      required
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="text-gray-700 font-medium mb-1 block">Country *</span>
-                    <input
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                      placeholder="Country"
-                      value={newParent.country}
-                      onChange={(e) => setNewParent({ ...newParent, country: e.target.value })}
+                      className="appearance-none w-full px-4 py-2 border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                      placeholder="Phone"
+                      value={editingParent.phone}
+                      onChange={(e) => handlePhoneChange(e)}
                       required
                     />
                   </label>
                 </div>
 
-                <label className="block">
-                  <span className="text-gray-700 font-medium mb-1 block">Emergency Contact</span>
-                  <input
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                    placeholder="Emergency Contact (optional)"
-                    value={newParent.emergencyContact ?? ''}
-                    onChange={(e) => setNewParent({ ...newParent, emergencyContact: e.target.value })}
+                <div className="block">
+                  <AutoCompleteAddress
+                    onAddressChanged={handleAddressChange}
+                    addressValues={newParentAddressValues}
                   />
-                </label>
+                </div>
 
-                <label className="block">
-                  <span className="text-gray-700 font-medium mb-1 block">Preferred Language</span>
-                  <input
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                    placeholder="e.g., en, fr (optional)"
-                    value={newParent.preferredLanguage ?? ''}
-                    onChange={(e) => setNewParent({ ...newParent, preferredLanguage: e.target.value })}
-                  />
-                </label>
+                {/* Maritual Status and relationship to kid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="block">
+                    <span className="text-gray-700 font-medium mb-1 block">
+                      Marital Status *
+                    </span>
+                    <select
+                      className="appearance-none w-full px-4 py-2 border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                      value={editingParent.maritalStatus}
+                      onChange={(e) =>
+                        updateParent({ maritalStatus: e.target.value })
+                      }
+                      required
+                    >
+                      <option value="" disabled>Select status</option>
+                      <option value="Married">Married</option>
+                      <option value="Separated">Separated</option>
+                      <option value="Single">Single</option>
+                      <option value="Common Law">Common Law</option>
+                      <option value="Divorced">Divorced</option>
+                    </select>
+                  </label>
 
-                <label className="block">
-                  <span className="text-gray-700 font-medium mb-1 block">Child IDs</span>
-                  <input
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400"
-                    placeholder="Comma separated child IDs (optional)"
-                    value={newParent.childIds.join(', ')}
-                    onChange={(e) =>
-                      setNewParent({
-                        ...newParent,
-                        childIds: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
-                      })
-                    }
-                  />
-                </label>
+                  {/* <label className="block">
+                    <span className="text-gray-700 font-medium mb-1 block">
+                      Relationship to child*
+                    </span>
+                    <select
+                      className="appearance-none w-full px-4 py-2 border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                      value={editingParent.childRelationships[0].relationship} // Come back later
+                      onChange={(e) =>
+                        updateParent({ newChildRelationship: e.target.value })
+                      }
+                      required
+                    >
+                      <option value="" disabled>Select relationship</option>
+                      <option value="Mother">Mother</option>
+                      <option value="Father">Father</option>
+                      <option value="Guardian">Guardian</option>
+                    </select>
+                  </label> */}
+                </div>
+                {/* Removing AssignClass Manually in input form   */}
               </div>
 
               <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
@@ -455,17 +612,27 @@ export default function ParentsTab({
                   type="button"
                   onClick={() => {
                     setIsFormOpen(false);
-                    setEditingParent(null);
+                    setEditingParent(initalEditingParent);
                   }}
-                  className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium px-6 py-3 rounded-lg transition duration-200"
+                  className="flex-1 bg-neutral-200 hover:bg-neutral-300 text-neutral-700 font-medium px-6 py-3 transition duration-200"
                 >
                   Cancel
                 </button>
+                {!editingParent && (
+                  <button
+                    type="button"
+                    onClick={() => clearDraft()}
+                    className="bg-neutral-100 hover:bg-neutral-200 text-neutral-600 font-medium px-6 py-3 transition duration-200 text-sm"
+                  >
+                    {/* reset fields too */}
+                    Clear Draft
+                  </button>
+                )}
                 <button
                   type="submit"
-                  className="flex-1 bg-gray-700 hover:bg-gray-800 text-white font-medium px-6 py-3 rounded-lg transition duration-200"
+                  className="flex-1 bg-black hover:bg-neutral-900 text-white font-medium px-6 py-3 transition duration-200"
                 >
-                  {editingParent ? 'Update Parent' : 'Add Parent'}
+                  {editingParent ? "Update Parent" : "Add Parent"}
                 </button>
               </div>
             </form>

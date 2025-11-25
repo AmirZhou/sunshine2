@@ -1,27 +1,41 @@
-
-// src/routes/childsRoutes.ts
+// backend/routes/web-admin/ChildRoutes.ts
 import { Router } from "express";
-import { getAllChilds, addChild, getChildById, updateChild, deleteChild } from "../../controllers/web-admin/ChildController";
+import { authMiddleware } from "../../middleware/authMiddleware";
+import * as C from "../../controllers/web-admin/ChildController";
 
+const r = Router();
 
-const childRoutes = Router();
+// All routes below require authentication
+r.use(authMiddleware);
 
+/** ---------- Child management ---------- **/
 
-// POST /childs
-childRoutes.post("/", addChild);
+// List all children (with optional filters)
+r.get("/", C.getChildren);
 
+// Create new child (daycareId is injected automatically)
+r.post("/", C.addChild);
 
-// GET /childs
-childRoutes.get("/", getAllChilds);
+// Update child profile (not enrollment)
+r.put("/:id", C.updateChild);
 
-// GET /childs/:id
-childRoutes.get("/:id", getChildById);
+// Delete a child
+r.delete("/:id", C.deleteChild);
 
-// Update child
-childRoutes.put("/:id", updateChild);
+/** ---------- Parent linking ---------- **/
 
-// DELETE /childs/:id
-childRoutes.delete("/:id", deleteChild);
+// Link parent by email (finds parent user automatically)
+r.post("/:id/link-parent-by-email", C.linkParentByEmail);
 
+// Unlink a parent by userId
+r.post("/:id/unlink-parent", C.unlinkParent);
 
-export default childRoutes;
+/** ---------- Class assignment ---------- **/
+
+// Assign a child to class (with age & capacity validation)
+r.post("/:id/assign", C.assignChild);
+
+// Unassign a child from class
+r.post("/:id/unassign", C.withdrawChildChild);
+
+export default r;

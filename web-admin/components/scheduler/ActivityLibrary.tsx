@@ -46,15 +46,15 @@ export function ActivityLibrary({ activities, onClose, onActivityDeleted }: Acti
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[80vh] overflow-hidden">
-        <div className="p-6 border-b border-gray-200">
+      <div className="bg-white max-w-2xl w-full max-h-[80vh] overflow-hidden">
+        <div className="p-6 border-b border-neutral-200">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">
+            <h3 className="text-lg font-semibold text-neutral-900">
               My Activities ({activities.length})
             </h3>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 text-xl"
+              className="text-neutral-400 hover:text-neutral-600 text-xl"
             >
               ×
             </button>
@@ -66,9 +66,9 @@ export function ActivityLibrary({ activities, onClose, onActivityDeleted }: Acti
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search activities..."
-              className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              className="w-full px-4 py-2 pl-10 border border-neutral-200 rounded-md focus:ring-2 focus:ring-neutral-900 focus:border-neutral-900 outline-none"
             />
-            <div className="absolute left-3 top-2.5 text-gray-400">
+            <div className="absolute left-3 top-2.5 text-neutral-400">
               🔍
             </div>
           </div>
@@ -76,7 +76,7 @@ export function ActivityLibrary({ activities, onClose, onActivityDeleted }: Acti
 
         <div className="p-6 overflow-y-auto max-h-96">
           {filteredActivities.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
+            <div className="text-center py-8 text-neutral-500">
               {searchTerm ? (
                 <p>No activities match your search.</p>
               ) : (
@@ -91,20 +91,20 @@ export function ActivityLibrary({ activities, onClose, onActivityDeleted }: Acti
               {filteredActivities.map(activity => (
                 <div
                   key={activity.id}
-                  className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors"
+                  className="p-4 border border-neutral-200 hover:border-neutral-300 transition-colors"
                 >
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
-                      <h4 className="font-medium text-gray-900 mb-2">
+                      <h4 className="font-medium text-neutral-900 mb-2">
                         {activity.title}
                       </h4>
                       {activity.description && (
-                        <p className="text-sm text-gray-600 mb-2">
+                        <p className="text-sm text-neutral-600 mb-2">
                           {activity.description}
                         </p>
                       )}
                       {activity.materials && (
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-neutral-500">
                           <span className="font-medium">Materials:</span> {activity.materials}
                         </p>
                       )}
@@ -128,10 +128,10 @@ export function ActivityLibrary({ activities, onClose, onActivityDeleted }: Acti
           )}
         </div>
 
-        <div className="p-6 border-t border-gray-200">
+        <div className="p-6 border-t border-neutral-200">
           <button
             onClick={onClose}
-            className="w-full px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            className="w-full px-4 py-2 text-neutral-700 border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors"
           >
             Close
           </button>

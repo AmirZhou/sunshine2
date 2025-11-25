@@ -15,6 +15,7 @@ interface ActivitySelectorProps {
   onRemove: () => void;
   onClose: () => void;
   slotInfo: SlotInfo;
+  targetClassName?: string; // Name of the class this activity is being assigned to
 }
 
 // This component preserves its modal interaction patterns but adapts to new data types
@@ -25,31 +26,32 @@ export function ActivitySelector({
   onSelect,
   onRemove,
   onClose,
-  slotInfo
+  slotInfo,
+  targetClassName
 }: ActivitySelectorProps) {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg max-w-md w-full max-h-[80vh] overflow-hidden">
-        <div className="p-6 border-b border-gray-200">
+      <div className="bg-white max-w-md w-full max-h-[80vh] overflow-hidden">
+        <div className="p-6 border-b border-neutral-200">
           <div className="flex justify-between items-center">
-            <h3 className="text-lg font-semibold text-gray-900">
+            <h3 className="text-lg font-semibold text-neutral-900">
               Select Activity
             </h3>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 text-xl"
+              className="text-neutral-400 hover:text-neutral-600 text-xl"
             >
               ×
             </button>
           </div>
-          <p className="text-sm text-gray-600 mt-1">
+          <p className="text-sm text-neutral-600 mt-1">
             {slotInfo.day.charAt(0).toUpperCase() + slotInfo.day.slice(1)} - {slotInfo.timeSlot}
           </p>
         </div>
 
         <div className="p-6 overflow-y-auto max-h-96">
           {currentActivity && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+            <div className="mb-4 p-3 bg-red-50 border border-red-200">
               <div className="flex justify-between items-start">
                 <div>
                   <h4 className="font-medium text-red-900">Current Activity</h4>
@@ -66,7 +68,7 @@ export function ActivitySelector({
           )}
 
           {activities.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
+            <div className="text-center py-8 text-neutral-500">
               <p>No activities created yet.</p>
               <p className="text-sm mt-1">Create your first activity to get started!</p>
             </div>
@@ -75,17 +77,17 @@ export function ActivitySelector({
               {activities.map(activity => (
                 <div
                   key={activity.id}
-                  className="p-4 border border-gray-200 rounded-lg hover:border-blue-300 cursor-pointer transition-colors"
+                  className="p-4 border border-neutral-200 hover:border-neutral-400 cursor-pointer transition-colors"
                   onClick={() => onSelect(activity.id)}
                 >
-                  <h4 className="font-medium text-gray-900 text-sm mb-1">
+                  <h4 className="font-medium text-neutral-900 text-sm mb-1">
                     {activity.title}
                   </h4>
-                  <p className="text-xs text-gray-600 mb-2 line-clamp-2">
+                  <p className="text-xs text-neutral-600 mb-2 line-clamp-2">
                     {activity.description}
                   </p>
                   {activity.materials && (
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-neutral-500">
                       <span className="font-medium">Materials:</span> {activity.materials}
                     </p>
                   )}
@@ -95,10 +97,17 @@ export function ActivitySelector({
           )}
         </div>
 
-        <div className="p-6 border-t border-gray-200">
+        <div className="p-6 border-t border-neutral-200">
+          {targetClassName && (
+            <div className="mb-3 px-3 py-2 bg-neutral-100 border border-neutral-200 rounded-md">
+              <p className="text-sm text-neutral-900">
+                <span className="font-medium">Assigning to:</span> {targetClassName}
+              </p>
+            </div>
+          )}
           <button
             onClick={onClose}
-            className="w-full px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            className="w-full px-4 py-2 text-neutral-700 border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors"
           >
             Cancel
           </button>

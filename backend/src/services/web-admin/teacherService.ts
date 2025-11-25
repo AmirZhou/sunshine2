@@ -1,29 +1,105 @@
 // backend/src/services/web-admin/teacherService.ts
 import type { Teacher } from "../../../../shared/types/type";
-import { db } from "../../lib/firebase";
+import { TeacherStatus } from "../../../../shared/types/type";
+import { db, admin } from "../../lib/firebase";
+import { UserRole } from "../../models/user";
+import { daycareLocationIds, checkingIfEmailIsUnique, updateEmailFirebaseAuth, deleteUserFirebaseAuth } from "../authService";
 
 // Collections
-const teachersRef = db.collection("teachers");
 const classesRef  = db.collection("classes");
 const usersRef    = db.collection("users");
 
+/*
+=================== Need Plug in case locationId passing from login admin with locationId = ['*'];Meaning 
+1. Fetching all teacher data of all location under that daycareProvider/ daycareId
+2. Adding allow multiple locations option
+3. Deleting/ Updating is affecting for only that location only
+*/
+
+
 // List all teachers
-export const getAllTeachers = async (): Promise<Teacher[]> => {
-  const snap = await teachersRef.get();
+export const getAllTeachers = async (daycareId: string, locationId: string): Promise<Teacher[]> => {
+  // Case when locationId = '*', use daycareId to take all locations Id of that daycare
+  if (locationId === '*') {
+    // Get all locations of that daycare
+    const locationIds = await daycareLocationIds(daycareId);
+    // If return empty location
+    if (locationIds.length === 0) {
+    console.log("No locations found for this provider");
+    return [];
+    }
+
+    // Else, 
+    // Firestore 'in' operator can only take up to 30 values
+    const chunks: string[][] = [];
+    while (locationIds.length) {
+      chunks.push(locationIds.splice(0, 30));
+    }
+
+    const teachers: Teacher[] = [];
+
+    for (const idsChunk of chunks) {
+      const snapshot = await db.collection('users')
+        .where('locationId', 'in', idsChunk) // match location
+        .where('role', '==', UserRole.Teacher) // match role
+        .get();
+      
+      snapshot.forEach((doc) => {
+        teachers.push({id: doc.id, ...(doc.data() as any)} as Teacher);
+      });
+    }
+
+    return teachers;
+  }
+
+
+  // else, case when locationId is exactly match
+  const snap = await usersRef
+    .where("locationId", "==", locationId)
+    .where("role", "==", UserRole.Teacher) // only teachers
+    .get();
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as Teacher));
 };
 
 // Create teacher (returns created teacher with id)
-export const addTeacher = async (teacher: Omit<Teacher, "id">): Promise<Teacher> => {
-  const doc = await teachersRef.add(teacher as any);
-  return { id: doc.id, ...(teacher as any) } as Teacher;
+export const addTeacher = async (teacher: Omit<Teacher, "id">): Promise<Teacher | null> => {
+
+  // Ensure email is unique among users
+  const isUniqueEmail = await checkingIfEmailIsUnique(teacher.email);
+  if (!isUniqueEmail) {
+    return null; // email already exists, return null
+  }
+  // Adding new teacher into user collection: with role, status and isRegistered flags
+  // Ensure no id field is present and locationId is set to the provided locationId, role set to Teacher
+  const docRef = await usersRef.add({
+    ...teacher, 
+    role: UserRole.Teacher, 
+    status: teacher.status || TeacherStatus.New, // status new by default
+    classIds: [], // Empty classId
+  });
+
+  // Updating current Teacher Doc with newly added id
+  const id = docRef.id;
+  await docRef.update({id});
+  
+  // return teacher
+  return { id: docRef.id, docId: id, ...(teacher as any) } as Teacher;
 };
 
-// Get teacher by id
+
+/**
+ *  Get teacher by id field: not doc id 
+ *  this could be doc(id) in case isRegisted is false
+ * Else, after register, id is updated to uid from Firebase Auth
+ * @param id 
+ * @returns 
+ */
 export const getTeacherById = async (id: string): Promise<Teacher | null> => {
-  const doc = await teachersRef.doc(id).get();
-  if (!doc.exists) return null;
-  return { id: doc.id, ...(doc.data() as any) } as Teacher;
+  const teacherSnap = await usersRef.where("id", "==", id).get();
+  // Get teacher doc
+  const teacherDoc = teacherSnap.docs[0];
+  if (!teacherDoc?.exists) return null;
+  return {...teacherDoc.data()} as Teacher;
 };
 
 // Update teacher, returns updated doc or null if not found
@@ -31,44 +107,111 @@ export const updateTeacher = async (
   id: string,
   body: Partial<Teacher>
 ): Promise<Teacher | null> => {
-  const docRef = teachersRef.doc(id);
-  const doc = await docRef.get();
-  if (!doc.exists) return null;
+  // Find the doc ref of Teacher
+  const teacherSnap = await usersRef.where("id", "==", id).get();
+  const teacherDoc = teacherSnap.docs[0];
+  if (!teacherDoc?.exists) return null;
 
-  await docRef.set(body, { merge: true });
-  const updated = await docRef.get();
+  const teacherDocRef = teacherDoc.ref;
+  const teacherData = teacherDoc.data() as Teacher;
+
+  // If status is Inactive, remove from all classes
+  if (body.status === TeacherStatus.Inactive) {
+    if (teacherData.classIds && teacherData.classIds.length > 0) {
+      const classIds = teacherData.classIds;
+      
+      // 1. Remove teacher from all classes
+      const batch = db.batch();
+      
+      for (const classId of classIds) {
+        const classRef = db.collection("classes").doc(classId);
+        batch.update(classRef, {
+          teacherIds: admin.firestore.FieldValue.arrayRemove(id) // Remove teacherId from teacherIds
+        });
+      }
+      
+      // Execute all class updates in one batch
+      await batch.commit();
+      
+      // 2. Clear teacher's classIds
+      body.classIds = [];
+    }
+  }
+
+  // Update teacher document
+  await teacherDocRef.update(body);
+  const updated = await teacherDocRef.get();
+
+  // Check if updating email
+  const currentEmail = teacherData.email;
+  if (body.email && body.email !== currentEmail) {
+    try {
+      await updateEmailFirebaseAuth(id, body.email);
+    } catch (error: any) {
+      throw error;
+    }
+  }
+
   return { id: updated.id, ...(updated.data() as any) } as Teacher;
 };
 
 // Delete teacher and clear class references; also remove user doc if exists
+// And delete user in Firebase Auth
 export const deleteTeacher = async (id: string): Promise<boolean> => {
-  const docRef = teachersRef.doc(id);
-  const doc = await docRef.get();
-  if (!doc.exists) return false;
+  const snapDoc = usersRef.where("id", "==", id);
+  const doc = await snapDoc.get();
 
   const clsSnap = await classesRef.where("teacherId", "==", id).get();
   const batch = db.batch();
 
-  batch.delete(docRef);
-  batch.delete(usersRef.doc(id)); // ok even if missing
+  const teacherDoc = doc.docs[0];
+  if (!teacherDoc?.exists) return false;
+
+  batch.delete(teacherDoc?.ref);
+  // batch.delete(usersRef.doc(id)); // ok even if missing
   clsSnap.forEach((d) => batch.update(d.ref, { teacherId: null }));
 
   await batch.commit();
-  return true;
+  // Delete user from Firebase Auth: if already registered
+  const teacherData = teacherDoc.data();
+  // if (!teacherData?.isRegistered) {
+  //   return true; // ignore
+  // }
+
+  // // Else, delete in Firebase Auth
+  // try {
+  //   await deleteUserFirebaseAuth(id);
+  //   return true;
+  // } catch (error: any) {
+  //   throw error;
+  // }
+  return true
 };
 
 // Assign a teacher to a class (bidirectional), returns success boolean
 export const assignTeacherToClass = async (id: string, classId: string): Promise<boolean> => {
-  const teacherRef = teachersRef.doc(id);
+  // Get Teacher by id field, not doc id
+  const teacherRef = usersRef
+    .where("id", "==", id);
+  const doc = await teacherRef.get();
+  const teacherDoc = doc.docs[0];
+
+  // Get Class by doc id
   const classRef   = classesRef.doc(classId);
 
-  const [tSnap, cSnap] = await Promise.all([teacherRef.get(), classRef.get()]);
+  const [tSnap, cSnap] = await Promise.all([teacherDoc, classRef.get()]);
+  // Either 1 of them cannot found, return false
   if (!tSnap.exists || !cSnap.exists) return false;
 
+  // Else, ... update classId and teacherId return choose
   const batch = db.batch();
-  batch.set(teacherRef, { classId }, { merge: true });
-  batch.set(classRef, { teacherId: id }, { merge: true });
+  batch.set(teacherDoc.ref, { classId }, { merge: true }); // Check the array, not object
+  batch.set(classRef, { teacherId: id }, { merge: true }); // Check the array, not object
   await batch.commit();
 
   return true;
 };
+
+/**
+ * Toggle UnassignParentToChild: is handle gracely in deleteParent service
+ */
